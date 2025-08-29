@@ -1,19 +1,20 @@
-
 import sys, re, json, csv, ast
 from typing import Dict, Any, List, Tuple
 
-email_pat = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b')
-ip_pat = re.compile(r'\b(?:(?:25[0-5]|2[0-4]\d|1?\d{1,2})\.){3}(?:25[0-5]|2[0-4]\d|1?\d{1,2})\b')
-passport_pat = re.compile(r'\b(?:(?:[A-PR-WYa-pr-wy])[0-9]{7})\b')
-aadhar_pat = re.compile(r'\b(?:\d{4}\s?\d{4}\s?\d{4})\b')
-ten_digit = re.compile(r'(?<!\d)(\d{10})(?!\d)')
-upi_pat = re.compile(r'\b([A-Za-z0-9._-]{2,})@([A-Za-z][A-Za-z0-9._-]{1,})\b')
+pat_email = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b')
+pat_ip = re.compile(r'\b(?:(?:25[0-5]|2[0-4]\d|1?\d{1,2})\.){3}(?:25[0-5]|2[0-4]\d|1?\d{1,2})\b')
+pat_passport = re.compile(r'\b([A-PR-WYa-pr-wy][0-9]{7})\b')
+pat_aadhar = re.compile(r'\b\d{4}\s?\d{4}\s?\d{4}\b')
+pat_phone = re.compile(r'(?<!\d)(\d{10})(?!\d)')
+pat_upi = re.compile(r'\b([A-Za-z0-9._-]{2,})@([A-Za-z][A-Za-z0-9._-]{1,})\b')
 
-upi_domains = {"upi","ybl","ibl","oksbi","okhdfcbank","okicici","okaxis","okyesbank","apl","axl","sbi",
-               "paytm","ptsbi","jupiter","airtel","oksbi","okaxis","okicici","okhdfcbank","okyesbank",
-               "yapl","hsbc","freecharge","mobikwik","gpay"}
+upi_known = {
+    "upi","ybl","ibl","oksbi","okhdfcbank","okicici","okaxis","okyesbank",
+    "apl","axl","sbi","paytm","ptsbi","jupiter","airtel","yapl",
+    "hsbc","freecharge","mobikwik","gpay"
+}
 
-keys_map = {
+key_groups = {
     "phone": {"phone","mobile","contact","alt_phone"},
     "aadhar": {"aadhar","aadhaar","aadhar_number","aadhaar_number","address_proof"},
     "passport": {"passport","passport_no","passport_number"},
@@ -30,163 +31,136 @@ keys_map = {
     "ip": {"ip","ip_address"}
 }
 
-
-def json_parse(x: str) -> Dict[str, Any]:
-
-    if not x: return {}
+def parse_json(txt: str) -> Dict[str, Any]:
+    if not txt:
+        return {}
     try:
-        return json.loads(x.strip())
+        return json.loads(txt.strip())
     except:
         try:
-            return ast.literal_eval(x.strip())
+            return ast.literal_eval(txt.strip())
         except:
             try:
-                return json.loads(x.replace("'", '"'))
+                return json.loads(txt.replace("'", '"'))
             except:
                 return {}
 
+def hide_phone(text: str) -> str:
+    return pat_phone.sub(lambda m: m.group(1)[:2] + "XXXXXX" + m.group(1)[-2:], text)
 
-def obf_phone(s: str) -> str:
+def only_digits(s: str) -> str:
+    return re.sub(r'\D', '', s)
 
-    return ten_digit.sub(lambda m: m.group(1)[:2] + "XXXXXX" + m.group(1)[-2:], s)
+def hide_aadhar(txt: str) -> str:
+    raw = only_digits(txt)
+    return " ".join([("X"*8 + raw[-4:])[i:i+4] for i in range(0, 12, 4)]) if len(raw) == 12 else txt
 
-
-def digits_only(val: str) -> str:
-
-    return re.sub(r'\D', '', val)
-
-
-def obf_aadhar(s: str) -> str:
-
-    raw = digits_only(s)
-    return " ".join([("X"*8 + raw[-4:])[i:i+4] for i in range(0, 12, 4)]) if len(raw) == 12 else s
-
-
-def obf_passport(s: str) -> str:
-
+def hide_passport(txt: str) -> str:
     return "[REDACTED_PII]"
 
+def hide_upi(txt: str) -> str:
+    return pat_upi.sub(lambda m: m.group(1)[:2] + "****@" + m.group(2) if m.group(2).lower() in upi_known else m.group(0), txt)
 
-def obf_upi(s: str) -> str:
+def hide_email(txt: str) -> str:
+    return pat_email.sub(lambda m: m.group(0).split("@")[0][:2] + "****@" + m.group(0).split("@")[1], txt)
 
-    return upi_pat.sub(lambda m: m.group(1)[:2] + "****@" + m.group(2) if m.group(2).lower() in upi_domains else m.group(0), s)
+def seems_name(val: str) -> bool:
+    if not isinstance(val, str):
+        return False
+    parts = [x for x in re.split(r'\s+', val.strip()) if re.fullmatch(r"[A-Za-z.\-']{2,}", x)]
+    return len(parts) >= 2
 
-
-def obf_email(s: str) -> str:
-
-    return email_pat.sub(lambda m: m.group(0).split("@")[0][:2] + "****@" + m.group(0).split("@")[1], s)
-
-
-def likely_name(val: str) -> bool:
-
-    if not isinstance(val, str): return False
-    tokens = [x for x in re.split(r'\s+', val.strip()) if re.fullmatch(r"[A-Za-z.\-']{2,}", x)]
-    return len(tokens) >= 2
-
-
-def mask_name(txt: str) -> str:
-
+def mask_person(txt: str) -> str:
     return " ".join(w[0] + "X"*(len(w)-1) if len(w) > 1 else "X" for w in txt.split()) if isinstance(txt, str) else txt
 
+def is_ip(x): return isinstance(x, str) and pat_ip.search(x)
+def is_email(x): return isinstance(x, str) and pat_email.search(x)
+def is_upi(x): return isinstance(x, str) and any(m.group(2).lower() in upi_known for m in pat_upi.finditer(x))
+def is_phone(x): return isinstance(x, str) and pat_phone.search(x)
+def is_aadhar(x): return isinstance(x, str) and (pat_aadhar.search(x) or len(only_digits(x)) == 12)
+def is_passport(x): return isinstance(x, str) and pat_passport.search(x)
+def is_address(x): return isinstance(x, str) and re.search(r'\d', x) and re.search(r'[A-Za-z]', x) and re.search(r'\b\d{6}\b', x)
 
-def valid_ip(x): return isinstance(x, str) and ip_pat.search(x)
+def redact_entry(record: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+    flagged = False
+    flags = set()
+    redacted = dict(record)
 
-def valid_email(x): return isinstance(x, str) and email_pat.search(x)
-
-def valid_upi(x): return isinstance(x, str) and any(m.group(2).lower() in upi_domains for m in upi_pat.finditer(x))
-
-def valid_phone(x): return isinstance(x, str) and ten_digit.search(x)
-
-def valid_aadhar(x): return isinstance(x, str) and (aadhar_pat.search(x) or len(digits_only(x)) == 12)
-
-def valid_passport(x): return isinstance(x, str) and passport_pat.search(x)
-
-def valid_addr(x): return isinstance(x, str) and re.search(r'\d', x) and re.search(r'[A-Za-z]', x) and re.search(r'\b\d{6}\b', x)
-
-
-
-def clean_entry(row: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
-
-    pii_spotted = False
-    groups = set()
-    clone = dict(row)
-
-    for k, v in row.items():
-        key = str(k).lower()
+    for k, v in record.items():
+        lowk = str(k).lower()
         val = v if isinstance(v, str) else str(v) if v is not None else ""
 
-        if key in keys_map["phone"] and valid_phone(val): pii_spotted = True
-        if key in keys_map["aadhar"] and valid_aadhar(val): pii_spotted = True
-        if key in keys_map["passport"] and valid_passport(val): pii_spotted = True
-        if key in keys_map["upi"] and valid_upi(val): pii_spotted = True
-        if key in keys_map["address"] and (valid_phone(val) or valid_aadhar(val) or valid_upi(val)): pii_spotted = True
+        if lowk in key_groups["phone"] and is_phone(val): flagged = True
+        if lowk in key_groups["aadhar"] and is_aadhar(val): flagged = True
+        if lowk in key_groups["passport"] and is_passport(val): flagged = True
+        if lowk in key_groups["upi"] and is_upi(val): flagged = True
+        if lowk in key_groups["address"] and (is_phone(val) or is_aadhar(val) or is_upi(val)): flagged = True
 
-        if key in keys_map["name"] and likely_name(val): groups.add("name")
-        if key in keys_map["fname"] and val: groups.add("fname")
-        if key in keys_map["lname"] and val: groups.add("lname")
-        if key in keys_map["email"] and valid_email(val): groups.add("email")
-        if key in keys_map["address"] and valid_addr(val): groups.add("address")
-        if key in keys_map["city"] and val: groups.add("city")
-        if key in keys_map["state"] and val: groups.add("state")
-        if key in keys_map["pin"] and re.fullmatch(r'\d{6}', str(val)): groups.add("pin")
-        if key in keys_map["device"] and val: groups.add("device")
-        if key in keys_map["ip"] and valid_ip(val): groups.add("ip")
+        if lowk in key_groups["name"] and seems_name(val): flags.add("name")
+        if lowk in key_groups["fname"] and val: flags.add("fname")
+        if lowk in key_groups["lname"] and val: flags.add("lname")
+        if lowk in key_groups["email"] and is_email(val): flags.add("email")
+        if lowk in key_groups["address"] and is_address(val): flags.add("address")
+        if lowk in key_groups["city"] and val: flags.add("city")
+        if lowk in key_groups["state"] and val: flags.add("state")
+        if lowk in key_groups["pin"] and re.fullmatch(r'\d{6}', str(val)): flags.add("pin")
+        if lowk in key_groups["device"] and val: flags.add("device")
+        if lowk in key_groups["ip"] and is_ip(val): flags.add("ip")
 
-    if ("city" in groups and "pin" in groups) or ("city" in groups and "state" in groups):
-        groups.add("address")
+    if ("city" in flags and "pin" in flags) or ("city" in flags and "state" in flags):
+        flags.add("address")
 
-    score = int(("name" in groups or ("fname" in groups and "lname" in groups))) +             int("email" in groups) + int("address" in groups) +             int("device" in groups or "ip" in groups)
+    score = int(("name" in flags or ("fname" in flags and "lname" in flags))) + \
+            int("email" in flags) + int("address" in flags) + \
+            int("device" in flags or "ip" in flags)
 
-    final_flag = pii_spotted or score >= 2
+    final = flagged or score >= 2
 
-    if final_flag:
-        for k, v in clone.items():
-            key = str(k).lower()
+    if final:
+        for k, v in redacted.items():
+            lowk = str(k).lower()
             val = v if isinstance(v, str) else str(v) if v is not None else ""
 
-            if key in keys_map["phone"] and valid_phone(val): clone[k] = obf_phone(val)
-            elif key in keys_map["aadhar"] and valid_aadhar(val): clone[k] = obf_aadhar(val)
-            elif key in keys_map["passport"] and valid_passport(val): clone[k] = obf_passport(val)
-            elif key in keys_map["upi"] and valid_upi(val): clone[k] = obf_upi(val)
-            elif ("name" in groups or ("fname" in groups and "lname" in groups)) and                  (key in keys_map["name"] | keys_map["fname"] | keys_map["lname"]): clone[k] = mask_name(val)
-            elif "email" in groups and key in keys_map["email"] and valid_email(val): clone[k] = obf_email(val)
-            elif "address" in groups and (key in keys_map["address"] | keys_map["city"] | keys_map["state"] | keys_map["pin"]):
-                clone[k] = re.sub(r'\d', 'X', val) if key in keys_map["address"] else val
-            elif ("device" in groups or "ip" in groups) and key in keys_map["device"] | keys_map["ip"]:
-                clone[k] = "[REDACTED_PII]"
-            elif isinstance(v, str) and key in keys_map["address"]:
-                clone[k] = obf_phone(obf_upi(obf_aadhar(obf_passport(v))))
+            if lowk in key_groups["phone"] and is_phone(val): redacted[k] = hide_phone(val)
+            elif lowk in key_groups["aadhar"] and is_aadhar(val): redacted[k] = hide_aadhar(val)
+            elif lowk in key_groups["passport"] and is_passport(val): redacted[k] = hide_passport(val)
+            elif lowk in key_groups["upi"] and is_upi(val): redacted[k] = hide_upi(val)
+            elif ("name" in flags or ("fname" in flags and "lname" in flags)) and (lowk in (key_groups["name"] | key_groups["fname"] | key_groups["lname"])): redacted[k] = mask_person(val)
+            elif "email" in flags and lowk in key_groups["email"] and is_email(val): redacted[k] = hide_email(val)
+            elif "address" in flags and (lowk in (key_groups["address"] | key_groups["city"] | key_groups["state"] | key_groups["pin"])):
+                redacted[k] = re.sub(r'\d', 'X', val) if lowk in key_groups["address"] else val
+            elif ("device" in flags or "ip" in flags) and lowk in (key_groups["device"] | key_groups["ip"]):
+                redacted[k] = "[REDACTED_PII]"
+            elif isinstance(v, str) and lowk in key_groups["address"]:
+                redacted[k] = hide_phone(hide_upi(hide_aadhar(hide_passport(v))))
 
-    return clone, final_flag
+    return redacted, final
 
-
-def process_csv(path_in: str, path_out: str):
-
-    out_data: List[Dict[str, Any]] = []
-    with open(path_in, newline='', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for r in reader:
+def run_csv(inp: str, outp: str):
+    rows: List[Dict[str, Any]] = []
+    with open(inp, newline='', encoding='utf-8') as f:
+        read = csv.DictReader(f)
+        for r in read:
             rid = r.get("record_id")
-            dataraw = r.get("Data_json") or r.get("data_json") or ""
-            data = json_parse(dataraw)
-            cleaned, pii = clean_entry(data)
-            out_data.append({
+            raw = r.get("Data_json") or r.get("data_json") or ""
+            parsed = parse_json(raw)
+            fixed, flag = redact_entry(parsed)
+            rows.append({
                 "record_id": rid,
-                "redacted_data_json": json.dumps(cleaned, ensure_ascii=False),
-                "is_pii": str(pii)
+                "redacted_data_json": json.dumps(fixed, ensure_ascii=False),
+                "is_pii": str(flag)
             })
-    with open(path_out, "w", newline='', encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["record_id", "redacted_data_json", "is_pii"])
-        writer.writeheader()
-        writer.writerows(out_data)
+    with open(outp, "w", newline='', encoding="utf-8") as f:
+        write = csv.DictWriter(f, fieldnames=["record_id", "redacted_data_json", "is_pii"])
+        write.writeheader()
+        write.writerows(rows)
 
 if __name__ == "__main__":
-
     if len(sys.argv) < 2:
-        print("Usage: python3 pii_filter_daanushi.py input.csv [output.csv]")
+        print("Usage: python3 pii_cleaner_daanushi.py input.csv [output.csv]")
         sys.exit(1)
-    in_file = sys.argv[1]
-    out_file = sys.argv[2] if len(sys.argv) > 2 else "redacted_output_Daanushi_Sharma.csv"
-    process_csv(in_file, out_file)
-    print(f"Done: {out_file}")
 
+    infile = sys.argv[1]
+    outfile = sys.argv[2] if len(sys.argv) > 2 else "redacted_output_Daanushi_Sharma.csv"
+    run_csv(infile, outfile)
+    print(f"File saved: {outfile}")
